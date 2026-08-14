@@ -61,9 +61,9 @@ jobs:
 
       - name: Kuyruk bos
         if: steps.claim.outputs.has_job != 'true'
-        run: echo 'Bekleyen haber yok.'
+        run: echo 'Bekleyen haber yok veya onceki is halen kilitli.'
 
-      - name: Headless Chrome ile WordPress'e gonder
+      - name: Normal Chrome ile WordPress'e gonder
         if: steps.claim.outputs.has_job == 'true'
         shell: bash
         env:
@@ -74,8 +74,13 @@ jobs:
           echo "::add-mask::$BROWSER_URL"
 
           CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          XVFB="$(command -v xvfb-run || true)"
           if [ -z "$CHROME" ]; then
-            echo 'Chrome/Chromium runner üzerinde bulunamadi.' >&2
+            echo 'Chrome/Chromium runner uzerinde bulunamadi.' >&2
+            exit 1
+          fi
+          if [ -z "$XVFB" ]; then
+            echo 'xvfb-run runner uzerinde bulunamadi.' >&2
             exit 1
           fi
 
@@ -83,33 +88,29 @@ jobs:
           mkdir -p "$PROFILE"
 
           echo "Chrome: $CHROME"
-          echo 'Hosting dogrulamasi hazirlaniyor...'
-          timeout 40s "$CHROME" \
-            --headless=new \
+          echo '1/2 Hosting dogrulamasi normal tarayicida aciliyor...'
+          timeout 35s "$XVFB" -a "$CHROME" \
             --no-sandbox \
             --disable-gpu \
             --disable-dev-shm-usage \
             --no-first-run \
             --no-default-browser-check \
             --user-data-dir="$PROFILE" \
-            --virtual-time-budget=18000 \
-            --dump-dom "$PRIME_URL" \
-            > "$RUNNER_TEMP/prime.html" 2> "$RUNNER_TEMP/prime.err" || true
-
-          echo 'Iframe koprusu aciliyor...'
-          timeout 85s "$CHROME" \
-            --headless=new \
-            --no-sandbox \
-            --disable-gpu \
-            --disable-dev-shm-usage \
-            --no-first-run \
-            --no-default-browser-check \
-            --user-data-dir="$PROFILE" \
-            --virtual-time-budget=55000 \
-            --dump-dom "$BROWSER_URL" \
-            > "$RUNNER_TEMP/result.html" 2> "$RUNNER_TEMP/browser.err" || true
+            "$PRIME_URL" >/dev/null 2>"$RUNNER_TEMP/prime.err" || true
 
           sleep 3
+
+          echo '2/2 73Haber iframe koprusu normal tarayicida aciliyor...'
+          timeout 85s "$XVFB" -a "$CHROME" \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --no-first-run \
+            --no-default-browser-check \
+            --user-data-dir="$PROFILE" \
+            "$BROWSER_URL" >/dev/null 2>"$RUNNER_TEMP/browser.err" || true
+
+          sleep 5
 
       - name: Sonucu kontrol et
         if: steps.claim.outputs.has_job == 'true'
