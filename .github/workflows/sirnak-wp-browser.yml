@@ -171,3 +171,5 @@ jobs:
           tail -100 "$RUNNER_TEMP/chrome.err" 2>/dev/null || true
           echo '--- Xvfb kaydi ---'
           tail -50 "$RUNNER_TEMP/xvfb.log" 2>/dev/null || true
+
+# manual test trigger
