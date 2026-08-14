@@ -63,7 +63,7 @@ jobs:
         if: steps.claim.outputs.has_job != 'true'
         run: echo 'Bekleyen haber yok veya onceki is halen kilitli.'
 
-      - name: Normal Chrome ile WordPress'e gonder
+      - name: Tek Chrome oturumunda WordPress'e gonder
         if: steps.claim.outputs.has_job == 'true'
         shell: bash
         env:
@@ -74,43 +74,69 @@ jobs:
           echo "::add-mask::$BROWSER_URL"
 
           CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
-          XVFB="$(command -v xvfb-run || true)"
+          XVFB_BIN="$(command -v Xvfb || true)"
           if [ -z "$CHROME" ]; then
             echo 'Chrome/Chromium runner uzerinde bulunamadi.' >&2
             exit 1
           fi
-          if [ -z "$XVFB" ]; then
-            echo 'xvfb-run runner uzerinde bulunamadi.' >&2
+          if [ -z "$XVFB_BIN" ]; then
+            echo 'Xvfb runner uzerinde bulunamadi.' >&2
             exit 1
           fi
 
           PROFILE="$RUNNER_TEMP/sirnak-chrome-profile"
           mkdir -p "$PROFILE"
 
+          export DISPLAY=:99
+          "$XVFB_BIN" :99 -screen 0 1280x800x24 -nolisten tcp \
+            >"$RUNNER_TEMP/xvfb.log" 2>&1 &
+          XVFB_PID=$!
+
+          cleanup() {
+            if [ -n "${CHROME_PID:-}" ]; then kill "$CHROME_PID" 2>/dev/null || true; fi
+            kill "$XVFB_PID" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
           echo "Chrome: $CHROME"
-          echo '1/2 Hosting dogrulamasi normal tarayicida aciliyor...'
-          timeout 35s "$XVFB" -a "$CHROME" \
+          echo '1/3 Ayni Chrome oturumu baslatiliyor...'
+          "$CHROME" \
             --no-sandbox \
             --disable-gpu \
             --disable-dev-shm-usage \
             --no-first-run \
             --no-default-browser-check \
+            --disable-background-networking \
+            --remote-debugging-address=127.0.0.1 \
+            --remote-debugging-port=9222 \
             --user-data-dir="$PROFILE" \
-            "$PRIME_URL" >/dev/null 2>"$RUNNER_TEMP/prime.err" || true
+            "$PRIME_URL" \
+            >"$RUNNER_TEMP/chrome.out" 2>"$RUNNER_TEMP/chrome.err" &
+          CHROME_PID=$!
 
-          sleep 3
+          echo '2/3 Hosting JS/cookie dogrulamasi bekleniyor...'
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:9222/json/version >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          sleep 22
 
-          echo '2/2 73Haber iframe koprusu normal tarayicida aciliyor...'
-          timeout 85s "$XVFB" -a "$CHROME" \
-            --no-sandbox \
-            --disable-gpu \
-            --disable-dev-shm-usage \
-            --no-first-run \
-            --no-default-browser-check \
-            --user-data-dir="$PROFILE" \
-            "$BROWSER_URL" >/dev/null 2>"$RUNNER_TEMP/browser.err" || true
+          echo '3/3 Kopru AYNI Chrome oturumunda yeni sekmede aciliyor...'
+          python3 <<'PY'
+          import os, urllib.parse, urllib.request
+          target = os.environ['BROWSER_URL']
+          endpoint = 'http://127.0.0.1:9222/json/new?' + urllib.parse.quote(target, safe='')
+          req = urllib.request.Request(endpoint, method='PUT')
+          with urllib.request.urlopen(req, timeout=15) as r:
+              print(r.read().decode('utf-8', errors='replace')[:1000])
+          PY
 
-          sleep 5
+          # iframe -> bot.php POST -> x.php ACK icin tarayiciyi acik tut.
+          sleep 70
+
+          echo 'Chrome oturumu tamamlandi.'
 
       - name: Sonucu kontrol et
         if: steps.claim.outputs.has_job == 'true'
@@ -137,3 +163,14 @@ jobs:
           print('Aktarim tamamlanmadi:', status, d.get('message',''))
           sys.exit(1)
           PY
+
+      - name: Basarisizlik tanilamasi
+        if: failure() && steps.claim.outputs.has_job == 'true'
+        shell: bash
+        run: |
+          echo '--- chrome.err son 80 satir ---'
+          tail -80 "$RUNNER_TEMP/chrome.err" 2>/dev/null || true
+          echo '--- chrome.out son 40 satir ---'
+          tail -40 "$RUNNER_TEMP/chrome.out" 2>/dev/null || true
+          echo '--- xvfb.log son 40 satir ---'
+          tail -40 "$RUNNER_TEMP/xvfb.log" 2>/dev/null || true
