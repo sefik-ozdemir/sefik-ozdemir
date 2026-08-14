@@ -52,6 +52,7 @@ jobs:
           RUN_ID="${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-$(python3 -c 'import uuid; print(uuid.uuid4())')"
           PROFILE="$RUNNER_TEMP/sirnak-wp-profile"
           TRIGGER_HTML="$RUNNER_TEMP/sa-trigger.html"
+          export RUN_ID TRIGGER_HTML
           mkdir -p "$PROFILE"
 
           export DISPLAY=:99
@@ -121,7 +122,6 @@ jobs:
           PY
 
           echo '3/3 Sonuc bekleniyor...'
-          export RUN_ID
           python3 <<'PY'
           import json, os, sys, time, urllib.request
 
