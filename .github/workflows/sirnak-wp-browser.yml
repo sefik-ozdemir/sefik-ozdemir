@@ -1,9 +1,12 @@
 name: Sirnak WordPress Browser Bridge
 
 on:
+  push:
+    paths:
+      - '.github/workflows/sirnak-wp-browser.yml'
   workflow_dispatch:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '3,8,13,18,23,28,33,38,43,48,53,58 * * * *'
 
 permissions:
   contents: read
