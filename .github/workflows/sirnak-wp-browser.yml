@@ -1,0 +1,135 @@
+name: Sirnak WordPress Browser Bridge
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: sirnak-wp-browser-bridge
+  cancel-in-progress: false
+
+jobs:
+  bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+
+    steps:
+      - name: GitHub OIDC token al
+        id: oidc
+        shell: bash
+        run: |
+          set -euo pipefail
+          JSON="$(curl -fsSL \
+            -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=73haber-wp-bridge")"
+          TOKEN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<<"$JSON")"
+          echo "::add-mask::$TOKEN"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+      - name: Bekleyen haberi al
+        id: claim
+        shell: bash
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+        run: |
+          set -euo pipefail
+          RESPONSE="$(curl -fsSL \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            'https://www.73haber.com.tr/x.php?gha=claim')"
+          printf '%s' "$RESPONSE" > "$RUNNER_TEMP/claim.json"
+
+          python3 <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'claim.json')
+          d=json.load(open(p,encoding='utf-8'))
+          if not d.get('ok') or d.get('no_job'):
+              print('has_job=false')
+          else:
+              print('has_job=true')
+              print('job_id='+str(d['job_id']))
+              print('prime_url='+str(d['prime_url']))
+              print('browser_url='+str(d['browser_url']))
+          PY
+
+      - name: Kuyruk bos
+        if: steps.claim.outputs.has_job != 'true'
+        run: echo 'Bekleyen haber yok.'
+
+      - name: Headless Chrome ile WordPress'e gonder
+        if: steps.claim.outputs.has_job == 'true'
+        shell: bash
+        env:
+          PRIME_URL: ${{ steps.claim.outputs.prime_url }}
+          BROWSER_URL: ${{ steps.claim.outputs.browser_url }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$BROWSER_URL"
+
+          CHROME="$(command -v google-chrome || command -v google-chrome-stable || command -v chromium || command -v chromium-browser || true)"
+          if [ -z "$CHROME" ]; then
+            echo 'Chrome/Chromium runner üzerinde bulunamadi.' >&2
+            exit 1
+          fi
+
+          PROFILE="$RUNNER_TEMP/sirnak-chrome-profile"
+          mkdir -p "$PROFILE"
+
+          echo "Chrome: $CHROME"
+          echo 'Hosting dogrulamasi hazirlaniyor...'
+          timeout 40s "$CHROME" \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --no-first-run \
+            --no-default-browser-check \
+            --user-data-dir="$PROFILE" \
+            --virtual-time-budget=18000 \
+            --dump-dom "$PRIME_URL" \
+            > "$RUNNER_TEMP/prime.html" 2> "$RUNNER_TEMP/prime.err" || true
+
+          echo 'Iframe koprusu aciliyor...'
+          timeout 85s "$CHROME" \
+            --headless=new \
+            --no-sandbox \
+            --disable-gpu \
+            --disable-dev-shm-usage \
+            --no-first-run \
+            --no-default-browser-check \
+            --user-data-dir="$PROFILE" \
+            --virtual-time-budget=55000 \
+            --dump-dom "$BROWSER_URL" \
+            > "$RUNNER_TEMP/result.html" 2> "$RUNNER_TEMP/browser.err" || true
+
+          sleep 3
+
+      - name: Sonucu kontrol et
+        if: steps.claim.outputs.has_job == 'true'
+        shell: bash
+        env:
+          OIDC_TOKEN: ${{ steps.oidc.outputs.token }}
+          JOB_ID: ${{ steps.claim.outputs.job_id }}
+        run: |
+          set -euo pipefail
+          STATUS="$(curl -fsSL \
+            -H "Authorization: Bearer ${OIDC_TOKEN}" \
+            "https://www.73haber.com.tr/x.php?gha=status&job=${JOB_ID}")"
+          echo "$STATUS"
+          printf '%s' "$STATUS" > "$RUNNER_TEMP/status.json"
+
+          python3 <<'PY'
+          import json, os, sys
+          p=os.path.join(os.environ['RUNNER_TEMP'],'status.json')
+          d=json.load(open(p,encoding='utf-8'))
+          status=str(d.get('status',''))
+          if status in ('success','duplicate'):
+              print('WordPress aktarimi basarili:', d.get('message',''))
+              sys.exit(0)
+          print('Aktarim tamamlanmadi:', status, d.get('message',''))
+          sys.exit(1)
+          PY
